@@ -1,1 +1,1 @@
-# Personal information about Yi Tang.
+# Information about Yi Tang

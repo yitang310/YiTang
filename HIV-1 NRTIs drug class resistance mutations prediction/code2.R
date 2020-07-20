@@ -1,5 +1,5 @@
 #setwd and call library
-setwd("/Users/ty/Desktop/stat454/hw/hw2/A2_2_Tang_Yi_(and_Yang_Chenxi)")
+#setwd("workdirectory")
 source("HelperFunctions.R")
 library(caret)
 library(class)

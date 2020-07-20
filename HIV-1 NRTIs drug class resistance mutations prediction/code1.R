@@ -1,5 +1,5 @@
 #setwd and call library
-setwd("/Users/ty/Desktop/stat454/hw/hw1/A1_2_Tang_Yi_(and_Yang_Chenxi)")
+#setwd("workdirectory")
 set.seed(10, kind = "Mersenne-Twister", normal.kind = "Inversion")
 source("HelperFunctions.R")
 library(caret)
