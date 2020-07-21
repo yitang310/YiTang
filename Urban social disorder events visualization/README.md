@@ -8,4 +8,4 @@ Methods: Visualizing urban social disorder events among 4 regions by 6 plots, in
 
 Tools: Manipulating Python, Excel and Tableau to complete the project
 
-[Urban social disorder link](https://public.tableau.com/profile/tang6751#!/vizhome/DATA551Project/ty1)
+[Urban social disorder Tableau link](https://public.tableau.com/profile/tang6751#!/vizhome/DATA551Project/ty1)
