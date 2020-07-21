@@ -1,0 +1,744 @@
+---
+title: "code"
+author: "Chenxi Yang, Yi Tang"
+date: "15/04/2020"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,warning=FALSE)
+```
+
+# COVID-19 virus infections
+
+From 1.22.2020 to 4.11.2020
+Data came form https://www.kaggle.com/c/covid19-global-forecasting-week-4/data COVID19 Global Forecasting (Week 4)
+
+```{r}
+# read data
+data<-read.csv("train.csv",header = T)
+```
+
+```{r}
+# call library
+library(dplyr)
+library(forecast)
+library(MLmetrics)
+library(splines)
+```
+
+### Overall
+
+```{r}
+# summary of data
+summary(data)
+```
+
+No NA in Country_Region,Date, ConfirmedCases and Fatalities.
+
+
+```{r}
+# number of countries or regions 
+length(levels(data$Country_Region))
+```
+
+```{r}
+# number of dates
+length(levels(data$Date))
+```
+
+
+```{r}
+# combine Country_Region and Province_State
+data$Country_Region_Province_State<-as.factor(paste(data$Country_Region,"(",
+                                    data$Province_State,")"))
+head(data)
+```
+
+Only use Canada data.
+
+```{r}
+#filter Canada data
+data_canada<-filter(data,Country_Region=="Canada")
+data_canada$Province_State<-as.factor(as.character(data_canada$Province_State))
+data_canada$Country_Region_Province_State<-
+  as.factor(as.character(data_canada$Country_Region_Province_State))
+head(data_canada)
+```
+
+```{r}
+# summary of canada data
+summary(data_canada)
+```
+
+```{r fig.width=6,fig.height=4}
+# Time Series of Confirmed Cases in Canda From 2020-01.22 to 2020.04.11
+province<-data_canada %>%
+  group_split(Province_State)
+province_name<-numeric(12)
+for (i in 1:12){
+    assign(paste0("province",i),as.ts(province[[i]]$ConfirmedCases))
+    province_name[i]<-as.character(province[[i]]$Province_State[1])
+}
+color<-rainbow(12)
+par(cex.main = 0.8)
+ts.plot(province1,province2,province3,province4,
+        province5,province6,province7,province8,
+        province9,province10,province11,province12, 
+        col = color,
+        main="Time Series of Confirmed Cases in Canda From 2020.01.22 to 2020.04.11")
+legend("topleft", legend=province_name,lty=1, col=color,cex=0.5)
+```
+
+```{r fig.width=6,fig.height=4}
+# Time Series of Fatalities in Canda From 2020.01.22 to 2020.04.11
+province<-data_canada %>%
+  group_split(Province_State)
+province_name<-numeric(12)
+for (i in 1:12){
+    assign(paste0("province",i),as.ts(province[[i]]$Fatalities))
+    province_name[i]<-as.character(province[[i]]$Province_State[1])
+}
+# plot every provinces on the same plot
+color<-rainbow(12)
+par(cex.main = 0.8)
+ts.plot(province1,province2,province3,province4,
+        province5,province6,province7,province8,
+        province9,province10,province11,province12, 
+        col = color,
+        main="Time Series of Fatalities in Canda From 2020.01.22 to 2020.04.11")
+legend("topleft", legend=province_name,lty=1, col=color,cex=0.5)
+```
+
+```{r}
+# convert to date variable
+data_canada$Date<-as.Date(data_canada$Date, format = "%Y-%m-%d")
+```
+
+```{r}
+# days after first Confirmed case happened 
+case1<-function(province) {
+  case_dates<-filter(data_canada, 
+                     Province_State == province & ConfirmedCases > 0)
+  if(nrow(case_dates) > 0) {
+    return(min(case_dates$Date))
+  } else {
+    return(0)
+  }
+}
+data_canada$days_after_first_confirmedCases<-0
+for (i in 1:nrow(data_canada)){
+  case1date<-case1(data_canada$Province_State[i])
+  if(case1date != 0 && case1date <= data_canada$Date[i] ){
+    data_canada$days_after_first_confirmedCases[i]<-as.numeric(data_canada$Date[i]-case1date)+1
+  }
+}
+# avoid error for log, set 1 in days_after_first_confirmedCases if date before first confirmedCases case happened
+
+data_canada$days_after_first_confirmedCases<-data_canada$days_after_first_confirmedCases+1
+```
+
+```{r}
+# days after first Fatalities case happened
+case1<-function(province) {
+  case_dates<-filter(data_canada, 
+                     Province_State == province & Fatalities > 0)
+  if(nrow(case_dates) > 0) {
+    return(min(case_dates$Date))
+  } else {
+    return(0)
+  }
+}
+data_canada$days_after_first_fatalities<-0
+for (i in 1:nrow(data_canada)){
+  case1date<-case1(data_canada$Province_State[i])
+  if(case1date != 0 && case1date <= data_canada$Date[i] ){
+    data_canada$days_after_first_fatalities[i]<-as.numeric(data_canada$Date[i]-case1date)+1
+  }
+}
+# avoid error for log, set 1 in days_after_first_fatalities if date before first fatalities case happened
+data_canada$days_after_first_fatalities<-data_canada$days_after_first_fatalities+1 
+```
+
+Training data: 2020-01.22-2020.03.31
+Testing data: 2020-04.01-2020.04.11
+
+```{r}
+# separate training data and testing data
+train_canada<-filter(data_canada,Date<"2020-04-01")
+test_canada<-filter(data_canada,Date>="2020-04-01")
+```
+
+### choosing methods: fit and check models
+
+```{r}
+# build a table
+mse_dataframe<-data.frame("model"=numeric(15),
+                          "per_province"=numeric(15),
+                          "ConfirmedCases_mse"=numeric(15),
+                          "Fatalities_mse"=numeric(15))
+```
+
+```{r}
+mse_by_province_canada<-function(modelname,datatype){
+  province_name<-as.character(unique(data_canada$Province_State))
+  mse_total<-0
+  for (i in 1:12){
+    province_train<-filter(train_canada,Province_State==province_name[i])
+    province_test<-filter(test_canada,Province_State==province_name[i])
+    mse<-modelname(province_train,province_test,datatype)
+    mse_total<-mse_total+mse
+  }
+  mse<-mse_total/length(province_name)
+  return(round(mse,2))
+}
+```
+
+#### quasipoisson logistic regression:
+
+poisson regression used for count data, since lack of significant parameters, using quasipoisson regression to expand standard error.
+```{r}
+# quasipoisson regression 
+mod1<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-glm(traindata$ConfirmedCases~days_after_first_confirmedCases+Province_State,data=traindata,family=quasipoisson(link="log"))
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-glm(traindata$Fatalities~days_after_first_fatalities+Province_State,data=traindata,family=quasipoisson(link="log"))
+  }
+  pred<-round(predict(mod, newdata=testdata, type = "response"),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(round(mse,2))
+}
+```
+
+#### quasipoisson logistic regression with log(x):
+
+```{r}
+# quasipoisson logistic regression with log(x)
+mod2<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-glm(traindata$ConfirmedCases~log(days_after_first_confirmedCases)+
+                   Province_State,data=traindata,family=quasipoisson(link="log"))
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-glm(traindata$Fatalities~log(days_after_first_fatalities)+
+                   Province_State,data=traindata,family=quasipoisson(link="log"))
+  }
+  pred<-round(predict(mod, newdata=testdata, type = "response"),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(round(mse,2))
+}
+
+```
+
+#### 2nd degree quasipoisson polynomial regression: 
+
+```{r}
+# 2nd degree quasipoisson polynomial regression 
+mod3<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-glm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases +
+                  I(days_after_first_confirmedCases^2),
+                 data=traindata,family=quasipoisson(link="log"))
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-glm(traindata$Fatalities~
+                 days_after_first_fatalities+
+                 I(days_after_first_fatalities^2),
+                 data=traindata,family=quasipoisson(link="log"))
+  }
+  pred<-round(predict(mod, newdata=testdata, type = "response"),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 3rd degree quasipoisson polynomial regression: 
+
+```{r}
+# 3rd degree quasipoisson polynomial regression 
+mod4<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-glm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases +
+                  I(days_after_first_confirmedCases^2)+
+                  I(days_after_first_confirmedCases^3),
+                 data=traindata,family=quasipoisson(link="log"))
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-glm(traindata$Fatalities~
+                 days_after_first_fatalities+
+                 I(days_after_first_fatalities^2)+
+                 I(days_after_first_fatalities^3),
+                 data=traindata,family=quasipoisson(link="log"))
+  }
+  pred<-round(predict(mod, newdata=testdata, type = "response"),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 2nd degree quasipoisson polynomial regression with truncated splines:
+
+```{r}
+# 2nd degree quasipoisson polynomial regression with truncated splines 
+tr.pwr<-function(x,knot,degree){ 
+  (x>knot)*(x-knot)^degree
+}
+
+mod5<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-glm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases+
+                  I(days_after_first_confirmedCases^2)+
+                  tr.pwr(days_after_first_confirmedCases,12,2),
+                 data=traindata,family=quasipoisson(link="log"))
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-glm(traindata$Fatalities~
+                  days_after_first_fatalities+
+                  I(days_after_first_fatalities^2) +
+                  tr.pwr(days_after_first_fatalities,2,2),
+                 data=traindata,family=quasipoisson(link="log"))
+  }
+  pred<-round(predict(mod, newdata=testdata, type = "response"),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 3rd degree quasipoisson polynomial regression with truncated splines
+
+```{r}
+# 3rd degree quasipoisson polynomial regression with truncated splines 
+mod6<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-glm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases+
+                  I(days_after_first_confirmedCases^2)+
+                   I(days_after_first_confirmedCases^3)+
+                  tr.pwr(days_after_first_confirmedCases,12,3),
+                 data=traindata,family=quasipoisson(link="log"))
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-glm(traindata$Fatalities~
+                  days_after_first_fatalities+
+                  I(days_after_first_fatalities^2) +
+                   I(days_after_first_fatalities^3) +
+                  tr.pwr(days_after_first_fatalities,2,3),
+                 data=traindata,family=quasipoisson(link="log"))
+  }
+  pred<-round(predict(mod, newdata=testdata, type = "response"),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 1st degree quasipoisson polynomial regression with B-splines
+
+```{r}
+# 1st degree quasipoisson regression with B-Spline
+mod7<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-glm(traindata$ConfirmedCases~
+                  bs(days_after_first_confirmedCases,
+                     degree=1,knots=28,Boundary.knots=c(1,82)),
+                 data=traindata,family=quasipoisson(link="log"))
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-glm(traindata$Fatalities~
+                  bs(days_after_first_fatalities,
+                     deg=1,knots=2,Boundary.knots=c(1,82)),
+                 data=traindata,family=quasipoisson(link="log"))
+  }
+  pred<-round(predict(mod, newdata=testdata, type = "response"),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### linear regression:
+
+```{r}
+# linear regression 
+mod8<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-lm(traindata$ConfirmedCases~days_after_first_confirmedCases+Province_State,data=traindata)
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-lm(traindata$Fatalities~days_after_first_fatalities+Province_State,data=traindata)
+  }
+  pred<-round(predict(mod, newdata=testdata),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(round(mse,2))
+}
+```
+
+#### linear regression with log(x):
+
+```{r}
+# linear regression with log(x)
+mod9<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-lm(traindata$ConfirmedCases~log(days_after_first_confirmedCases)+
+                   Province_State,data=traindata)
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-lm(traindata$Fatalities~log(days_after_first_fatalities)+
+                   Province_State,data=traindata)
+  }
+  pred<-round(predict(mod, newdata=testdata),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(round(mse,2))
+}
+```
+
+#### 2nd degree linear polynomial regression: 
+
+```{r}
+# 2nd degree linear polynomial regression 
+mod10<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-lm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases +
+                  I(days_after_first_confirmedCases^2),
+                 data=traindata)
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-lm(traindata$Fatalities~
+                 days_after_first_fatalities+
+                 I(days_after_first_fatalities^2),
+                 data=traindata)
+  }
+  pred<-round(predict(mod, newdata=testdata),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 3rd degree linear polynomial regression: 
+
+```{r}
+# 3rd degree linear polynomial regression 
+mod11<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-lm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases +
+                  I(days_after_first_confirmedCases^2)+
+                  I(days_after_first_confirmedCases^3),
+                 data=traindata)
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-lm(traindata$Fatalities~
+                 days_after_first_fatalities+
+                 I(days_after_first_fatalities^2)+
+                 I(days_after_first_fatalities^3),
+                 data=traindata)
+  }
+  pred<-round(predict(mod, newdata=testdata),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 2nd degree linear polynomial regression with truncated splines:
+
+```{r}
+# 2nd degree linear polynomial regression with truncated splines 
+mod12<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-lm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases+
+                  I(days_after_first_confirmedCases^2)+
+                  tr.pwr(days_after_first_confirmedCases,32,2),
+                 data=traindata)
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-lm(traindata$Fatalities~
+                  days_after_first_fatalities+
+                  I(days_after_first_fatalities^2) +
+                  tr.pwr(days_after_first_fatalities,2,2),
+                 data=traindata)
+  }
+  pred<-round(predict(mod, newdata=testdata),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 3rd degree linear polynomial regression with truncated splines
+
+```{r}
+# 3rd degree linear polynomial regression with truncated splines 
+mod13<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-lm(traindata$ConfirmedCases~
+                  days_after_first_confirmedCases+
+                  I(days_after_first_confirmedCases^2)+
+                   I(days_after_first_confirmedCases^3)+
+                  tr.pwr(days_after_first_confirmedCases,12,3),
+                 data=traindata)
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-lm(traindata$Fatalities~
+                  days_after_first_fatalities+
+                  I(days_after_first_fatalities^2) +
+                   I(days_after_first_fatalities^3) +
+                  tr.pwr(days_after_first_fatalities,2,3),
+                 data=traindata)
+  }
+  pred<-round(predict(mod, newdata=testdata),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### 1st degree linear polynomial regression with B-splines
+
+```{r}
+# 1st degree linear regression with B-Spline
+mod14<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    ytrue<-testdata[,5]
+    mod<-lm(traindata$ConfirmedCases~
+                  bs(days_after_first_confirmedCases,
+                     degree=1,knots=28,Boundary.knots=c(1,82)),
+                 data=traindata)
+  }else if(datatype=="fatalities"){
+    ytrue<-testdata[,6]
+    mod<-lm(traindata$Fatalities~
+                  bs(days_after_first_fatalities,
+                     deg=1,knots=2,Boundary.knots=c(1,82)),
+                 data=traindata)
+  }
+  pred<-round(predict(mod, newdata=testdata),0)
+  mse<-MSE(y_pred=pred, y_true=ytrue)
+  return(mse)
+}
+```
+
+#### ARIMA
+
+```{r}
+mod15<-function(traindata,testdata,datatype){
+  if (datatype=="confirmedcases"){
+    mod_c_arima<-auto.arima(traindata$ConfirmedCases)
+    pred_c<-round(as.data.frame(forecast(mod_c_arima,nrow(testdata)))[,1],0)
+    mse<-MSE(y_pred=pred_c, y_true = testdata$ConfirmedCases)
+  } else if (datatype=="fatalities"){
+    mod_f_arima<-auto.arima(traindata$Fatalities)
+    pred_f<-round(as.data.frame(forecast(mod_f_arima,nrow(testdata)))[,1],0)
+    mse<-MSE(y_pred=pred_f, y_true = testdata$Fatalities)
+  }
+  return (mse)
+}
+```
+
+
+```{r}
+mse_dataframe[1,]<-c("quasipoisson logistic regression with x","N",
+                    mod1(train_canada,test_canada,"confirmedcases"),
+                    mod1(train_canada,test_canada,"fatalities"))
+mse_dataframe[2,]<-c("quasipoisson logistic regression with log(x)","N",
+                     mod2(train_canada,test_canada,"confirmedcases"),
+                     mod2(train_canada,test_canada,"fatalities"))
+mse_dataframe[3,]<-c("2nd degree quasipoisson polynomial regression","Y",
+                     mse_by_province_canada(mod3,"confirmedcases"),
+                     mse_by_province_canada(mod3,"fatalities"))
+mse_dataframe[4,]<-c("3rd degree quasipoisson polynomial regression","Y",
+                     mse_by_province_canada(mod4,"confirmedcases"),
+                     mse_by_province_canada(mod4,"fatalities"))
+mse_dataframe[5,]<-c("2nd degree quasipoisson polynomial regression with truncated splines","Y",
+                     mse_by_province_canada(mod5,"confirmedcases"),
+                     mse_by_province_canada(mod5,"fatalities"))
+mse_dataframe[6,]<-c("3rd degree quasipoisson polynomial regression with truncated splines","Y",
+                     mse_by_province_canada(mod6,"confirmedcases"),
+                     mse_by_province_canada(mod6,"fatalities"))
+mse_dataframe[7,]<-c("1st degree quasipoisson regression with B-Spline","Y",
+                     mse_by_province_canada(mod7,"confirmedcases"),
+                     mse_by_province_canada(mod7,"fatalities"))
+mse_dataframe[8,]<-c("linear regression with x","N",
+                    mod8(train_canada,test_canada,"confirmedcases"),
+                    mod8(train_canada,test_canada,"fatalities"))
+mse_dataframe[9,]<-c("linear regression with log(x)","N",
+                     mod9(train_canada,test_canada,"confirmedcases"),
+                     mod9(train_canada,test_canada,"fatalities"))
+mse_dataframe[10,]<-c("2nd degree linear polynomial regression","Y",
+                     mse_by_province_canada(mod10,"confirmedcases"),
+                     mse_by_province_canada(mod10,"fatalities"))
+mse_dataframe[11,]<-c("3rd degree linear polynomial regression","Y",
+                     mse_by_province_canada(mod11,"confirmedcases"),
+                     mse_by_province_canada(mod11,"fatalities"))
+mse_dataframe[12,]<-c("2nd degree linear polynomial regression with truncated splines","Y",
+                     mse_by_province_canada(mod12,"confirmedcases"),
+                     mse_by_province_canada(mod12,"fatalities"))
+mse_dataframe[13,]<-c("3rd degree linear polynomial regression with truncated splines","Y",
+                     mse_by_province_canada(mod13,"confirmedcases"),
+                     mse_by_province_canada(mod13,"fatalities"))
+mse_dataframe[14,]<-c("1st degree linear regression with B-Spline","Y",
+                     mse_by_province_canada(mod14,"confirmedcases"),
+                     mse_by_province_canada(mod14,"fatalities"))
+mse_dataframe[15,]<-c("arima","Y",
+                     mse_by_province_canada(mod15,"confirmedcases"),
+                     mse_by_province_canada(mod15,"fatalities"))
+mse_dataframe
+write.csv(mse_dataframe,file="mse.csv",quote=F,row.names = F)
+```
+
+### choosing methods: construct predictive models
+
+confirmedcases: ARIMA
+
+
+```{r}
+# confirmedcases
+confirmedcases_arima<-function(dataname){
+  province_name<-as.character(unique(dataname$Province_State))
+  confirmedcases_arimamod<-vector(mode = "list", length =12)
+  for (i in 1:length(province_name)){
+    province_train<-filter(dataname,Province_State==province_name[i])
+    confirmedcases_arimamod[[i]]<-auto.arima(province_train$ConfirmedCases)
+  }
+  return(confirmedcases_arimamod)
+}
+confirmedcases_final_mod<-confirmedcases_arima(data_canada)
+```
+
+
+fatalities: quasipoisson logistic regression with log(x)
+
+```{r}
+# fatalities
+fatalities_quasilog<-function(dataname){
+  fatalities_quasilogmod<-vector(mode = "list", length =1)
+  fatalities_quasilogmod[[1]]<-glm(Fatalities~
+                  log(days_after_first_fatalities)+
+                  Province_State,
+                  data=dataname,family=quasipoisson(link="log"))
+  return(fatalities_quasilogmod)
+}
+fatalities_final_mod<-fatalities_quasilog(data_canada)
+```
+
+### Prediction
+
+```{r}
+# confirmedcases
+pred_confirmedcases<-function(dataname,preddays){
+  province_name<-as.character(unique(dataname$Province_State))
+  testdata<-data.frame(
+    "Province_State"=rep(province_name,rep(preddays,length(province_name))),
+    "Date"=rep(max(dataname$Date)+1:preddays,length(province_name)),
+    "Pred_ConfirmedCases"=0)
+  confirmedcases_final_mod<-confirmedcases_arima(dataname)
+  pred<-numeric(0)
+  for (i in 1:length(province_name)){
+    pred_pro<-round(as.data.frame(forecast(confirmedcases_final_mod[[i]],preddays))[,1],0)
+    pred<-c(pred,pred_pro)
+  }
+  pred[pred<0]<-0
+  testdata$Pred_ConfirmedCases<-pred
+  return(testdata)
+}
+dataframe_pred_confirmedcases<-pred_confirmedcases(data_canada,50)
+# plot
+national_pred_confirmedcases<-aggregate(Pred_ConfirmedCases~Date,dataframe_pred_confirmedcases,sum)
+ts.plot(as.ts(national_pred_confirmedcases$Pred_ConfirmedCases))
+```
+
+
+
+
+
+
+```{r}
+# fatalities
+pred_fatalities<-function(dataname,preddays){
+  province_name<-as.character(unique(dataname$Province_State))
+  testdata<-data.frame(
+    "Province_State"=rep(province_name,rep(preddays,length(province_name))),
+    "Date"=rep(max(dataname$Date)+1:preddays,length(province_name)),
+    "Pred_Fatalities"=0)
+  temps<-numeric(0)
+  for (i in 1:length(province_name)){
+    temps<-c(temps,max(filter(dataname,Province_State==province_name[i])$days_after_first_fatalities)+1:preddays)
+  }
+  testdata$days_after_first_fatalities<-temps
+  pred<-round(predict(fatalities_quasilog(dataname)[[1]], newdata = testdata,type="response"),0)
+  pred[pred<0]<-0
+  testdata$Pred_Fatalities<-pred
+  return(testdata)
+}
+dataframe_pred_fatalities<-pred_fatalities(data_canada,50)
+# plot
+national_pred_fatalities<-aggregate(Pred_Fatalities~Date,dataframe_pred_fatalities,sum)
+ts.plot(as.ts(national_pred_fatalities$Pred_Fatalities))
+```
+
+```{r}
+plot1data<-cbind("Pred_ConfirmedCases"=dataframe_pred_confirmedcases[dataframe_pred_confirmedcases$Date=="2020-05-31	",c(3)],"Pred_Fatalities"=dataframe_pred_fatalities[dataframe_pred_fatalities$Date=="2020-05-31	",c(3)])
+plot1data<-t(as.matrix(plot1data))
+barplot(plot1data,col = c("red","black"),beside = TRUE)
+```
+
+```{r fig.width=6,fig.height=4}
+datapart1<-data_canada[,c(2,4,5,6)]
+datapart2<-cbind(dataframe_pred_confirmedcases[,c(1,2,3)],dataframe_pred_fatalities[,c(3)])
+names(datapart2)<-c("Province_State","Date","ConfirmedCases","Fatalities")
+plotdata2<-rbind(datapart1,datapart2)
+
+# Time Series of Confirmed Cases in Canda From 2020-01.22 to 2020.05.31
+province<-plotdata2 %>%
+  group_split(Province_State)
+province_name<-numeric(12)
+for (i in 1:12){
+    assign(paste0("province",i),as.ts(province[[i]]$ConfirmedCases))
+    province_name[i]<-as.character(province[[i]]$Province_State[1])
+}
+
+color<-rainbow(12)
+par(cex.main = 0.8)
+ts.plot(province1,province2,province3,province4,province5,province6,province7,province8,province9,province10,province11,province12, col = color,main="Time Series of Confirmed Cases in Canda From 2020.01.22 to 2020.05.31")
+legend("topleft", legend=province_name,lty=1, col=color,cex=0.5)
+```
+
+```{r fig.width=6,fig.height=4}
+# Time Series of Fatalities in Canda From 2020-01.22 to 2020.05.31
+province<-plotdata2 %>%
+  group_split(Province_State)
+province_name<-numeric(12)
+for (i in 1:12){
+    assign(paste0("province",i),as.ts(province[[i]]$Fatalities,start=c(2020,1,22),frequency=1))
+    province_name[i]<-as.character(province[[i]]$Province_State[1])
+}
+# plot every provinces on the same plot
+color<-rainbow(12)
+par(cex.main = 0.8)
+ts.plot(province1,province2,province3,province4,province5,province6,province7,province8,province9,province10,province11,province12, col = color,main="Time Series of Fatalities in Canda From 2020.01.22 to 2020.05.31")
+legend("topleft", legend=province_name,lty=1, col=color,cex=0.5)
+```
+
+
+
+```{r include=FALSE}
+write.csv(plotdata2,file="pred.csv",quote=F,row.names = F)
+```
+
+
