@@ -1,1 +1,1 @@
-# Information about Yi Tang
+# Github website for Yi Tang
