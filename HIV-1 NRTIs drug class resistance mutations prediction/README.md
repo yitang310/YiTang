@@ -1,4 +1,4 @@
-### HIV-1 NRTIs drug class resistance mutations prediction
+# HIV-1 NRTIs drug class resistance mutations prediction
 
 ### Oct. 2018 -- Nov. 2018
 
